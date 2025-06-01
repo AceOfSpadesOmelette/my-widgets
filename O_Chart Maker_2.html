@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      font-family: Calibri, sans-serif;
+      margin: 20px;
+      background: #f5f5f5;
+    }
+
+    .input-area {
+      margin-bottom: 20px;
+      max-width: 900px;
+    }
+
+    textarea {
+      width: 100%;
+      height: 300px;
+      margin-bottom: 10px;
+      font-family: monospace;
+      padding: 10px;
+      resize: vertical;
+      font-size: 14px;
+    }
+
+    button {
+      padding: 8px 16px;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-right: 10px;
+      font-size: 14px;
+    }
+
+    #viewport {
+      width: 100%;
+      height: 1123px; /* A4 height */
+      border: 1px solid #ccc;
+      background: white;
+      overflow: auto;
+      position: relative;
+      user-select: none;
+    }
+
+    #svgContainer {
+      transform-origin: top left;
+      position: relative;
+      background: white;
+    }
+  </style>
+</head>
+<body>
+  <div class="input-area">
+    <h3>Input your organization chart data (CSV format):</h3>
+    <textarea id="inputData" spellcheck="false">
+id,parent_id,position,name,qualifications,color,team
+1,,CEO,Alice Brown,MBA,#385723,false
+1,,CEO,Bob Smith,PhD Management,#385723,false
+2,1,VP Engineering,Carol White,BSc Engineering,#70AD47,false
+2,1,VP Engineering,David Green,PhD AI,#2196F3,false
+3,2,Engineering Manager 1,Emily Davis,BSc SE,#03A9F4,false
+4,3,Senior Engineer Team,,,#0097A7,true
+5,3,Senior Engineer,Michael Brown,PhD AI,#00BCD4,false
+6,5,Engineer Team,,,#0097A7,true
+7,5,Engineer,Chris Wilson,,#00BCD4,false
+8,2,Engineering Manager 2,Sarah Johnson,BEng EE,#03A9F4,false
+9,8,Engineer Team,,,#0097A7,true
+    </textarea>
+    <button onclick="generateChart()">Generate Chart</button>
+    <button onclick="downloadAsSVG()">Download as SVG</button>
+    <button onclick="downloadAsPNG()">Download as PNG</button>
+    <button onclick="importCSV()">Import CSV</button>
+    <button onclick="exportCSV()">Export CSV</button>
+    <input type="file" id="fileInput" accept=".csv" style="display:none" />
+  </div>
+
+  <div id="viewport">
+    <div id="svgContainer">
+      <svg id="orgChartSVG" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+  </div>
+
+<script>
+  const NODE_WIDTH = 180;
+  const NODE_HEADER_HEIGHT = 30;
+  const VERTICAL_GAP = 120;
+  const HORIZONTAL_GAP = 40;
+  const PADDING_RATIO = 0.05;
+  const svgNS = "http://www.w3.org/2000/svg";
+
+  const NAME_FONT_SIZE = 13;
+  const QUAL_FONT_SIZE = 11;
+  const LINE_SPACING = 4;
+
+  function parseCSV(text) {
+    const lines = text.trim().split(/\r?\n/);
+    if (lines.length < 2) throw new Error("CSV must have header and at least one row");
+    const headers = lines[0].split(',').map(h => h.trim());
+    const data = [];
+    for(let i=1; i<lines.length; i++) {
+      if (!lines[i].trim()) continue;
+      // Using a simple CSV parser for demo (doesn't handle commas inside quotes robustly)
+      const row = lines[i].split(',').map(c => c.trim());
+      const obj = {};
+      headers.forEach((h, idx) => obj[h] = row[idx] || "");
+      data.push(obj);
+    }
+    return data;
+  }
+
+  // New: Group multiple rows by id, aggregate names and qualifications arrays per node
+  function groupRowsById(rows) {
+    const nodeMap = {};
+    rows.forEach(row => {
+      if (!nodeMap[row.id]) {
+        nodeMap[row.id] = {
+          id: row.id,
+          parent_id: row.parent_id,
+          position: row.position,
+          color: row.color,
+          team: row.team,
+          names: [],
+          qualifications: []
+        };
+      }
+      if (row.name) nodeMap[row.id].names.push(row.name);
+      if (row.qualifications) nodeMap[row.id].qualifications.push(row.qualifications);
+    });
+    return Object.values(nodeMap);
+  }
+
+  function buildTree(nodes) {
+    const nodeMap = {};
+    nodes.forEach(n => nodeMap[n.id] = {...n, children: []});
+    let root = null;
+    nodes.forEach(n => {
+      if (!n.parent_id) {
+        root = nodeMap[n.id];
+      } else {
+        const parent = nodeMap[n.parent_id];
+        if (parent) parent.children.push(nodeMap[n.id]);
+        else throw new Error(`Parent ID ${n.parent_id} not found for node ID ${n.id}`);
+      }
+    });
+    if (!root) throw new Error("Root node not found (no node with empty parent_id)");
+    return root;
+  }
+
+  function createSVGElement(tag, attrs = {}) {
+    const el = document.createElementNS(svgNS, tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      el.setAttribute(k, v);
+    }
+    return el;
+  }
+
+  function calculateNodeHeight(data) {
+    const isTeam = (data.team || "").toLowerCase() === "true";
+    if (isTeam) return NODE_HEADER_HEIGHT;
+
+    const names = data.names || [];
+    const quals = data.qualifications || [];
+
+    const hasDetails = (names.length > 0 || quals.length > 0);
+
+    if (!hasDetails) return NODE_HEADER_HEIGHT;
+
+    let linesCount = 0;
+    let totalTextHeight = 0;
+    for (let i = 0; i < names.length; i++) {
+      linesCount++; // name line
+      totalTextHeight += NAME_FONT_SIZE;
+      if (quals[i]) {
+        linesCount++; // qualification line
+        totalTextHeight += QUAL_FONT_SIZE;
+      }
+    }
+    const totalSpacing = linesCount > 1 ? (linesCount - 1) * LINE_SPACING : 0;
+
+    return NODE_HEADER_HEIGHT + totalTextHeight + totalSpacing + 10; // extra bottom padding
+  }
+
+  function layoutTree(data) {
+    const childrenLayouts = (data.children || []).map(layoutTree);
+
+    let subtreeWidth;
+    if (childrenLayouts.length === 0) {
+      subtreeWidth = NODE_WIDTH;
+    } else {
+      subtreeWidth = childrenLayouts.reduce((sum, c) => sum + c.subtreeWidth, 0) + HORIZONTAL_GAP * (childrenLayouts.length - 1);
+    }
+
+    const nodeHeight = calculateNodeHeight(data);
+
+    return {
+      data,
+      childrenLayouts,
+      subtreeWidth,
+      nodeHeight,
+      x: 0,
+      y: 0
+    };
+  }
+
+  function positionTree(layout, startX, startY) {
+    layout.y = startY;
+    if (layout.childrenLayouts.length === 0) {
+      layout.x = startX;
+    } else {
+      let childX = startX;
+      layout.childrenLayouts.forEach(child => {
+        positionTree(child, childX, startY + child.nodeHeight + VERTICAL_GAP);
+        childX += child.subtreeWidth + HORIZONTAL_GAP;
+      });
+
+      const firstChild = layout.childrenLayouts[0];
+      const lastChild = layout.childrenLayouts[layout.childrenLayouts.length - 1];
+      const centerX = (firstChild.x + lastChild.x) / 2;
+      layout.x = centerX;
+    }
+  }
+
+  function drawNode(svg, layout) {
+    const g = createSVGElement('g', { cursor: 'default' });
+    const x = layout.x;
+    const y = layout.y;
+
+    const d = layout.data;
+    const isTeam = (d.team || "").toLowerCase() === "true";
+
+    const names = d.names || [];
+    const quals = d.qualifications || [];
+
+    const hasDetails = !isTeam && (names.length > 0 || quals.length > 0);
+
+    const nodeHeight = layout.nodeHeight;
+
+    if (!isTeam) {
+      // Header background rect with color
+      const header = createSVGElement('rect', {
+        x: x,
+        y: y,
+        width: NODE_WIDTH,
+        height: NODE_HEADER_HEIGHT,
+        rx: 6,
+        ry: 6,
+        fill: d.color || '#4CAF50',
+      });
+      g.appendChild(header);
+
+    // Outer rect with black border for all nodes
+    const rect = createSVGElement('rect', {
+      x: x,
+      y: y,
+      width: NODE_WIDTH,
+      height: nodeHeight,
+      rx: 6,
+      ry: 6,
+      fill: 'white',
+      stroke: 'black',
+      'stroke-width': 1,
+      //filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))',
+      'fill-opacity': 0,
+    });
+    g.appendChild(rect);
+
+      // Clip bottom corners of header rect if details exist
+      if (hasDetails) {
+        const clipRect = createSVGElement('rect', {
+          x: x,
+          y: y + NODE_HEADER_HEIGHT,
+          width: NODE_WIDTH,
+          height: 6,
+          fill: 'white',
+          'fill-opacity': 0,
+        });
+        g.appendChild(clipRect);
+      }
+    }
+
+    // Position text (black & underline if team, white otherwise)
+    const positionText = createSVGElement('text', {
+      x: x + NODE_WIDTH / 2,
+      y: y + 20,
+      'text-anchor': 'middle',
+      'font-weight': '600',
+      'font-size': '14px',
+      'pointer-events': 'none',
+      'font-family': 'Calibri, sans-serif',
+      'text-decoration': isTeam ? 'underline' : 'none',
+      fill: isTeam ? 'black' : 'white'
+    });
+    positionText.textContent = d.position;
+    g.appendChild(positionText);
+
+    if (hasDetails) {
+      let detailY = y + NODE_HEADER_HEIGHT + 15;
+
+      for (let i = 0; i < names.length; i++) {
+        const nameText = createSVGElement('text', {
+          x: x + NODE_WIDTH / 2,
+          y: detailY,
+          'text-anchor': 'middle',
+          fill: 'black',
+          'font-weight': 'bold',
+          'font-size': NAME_FONT_SIZE,
+          'pointer-events': 'none',
+          'font-family': 'Calibri, sans-serif'
+        });
+        nameText.textContent = names[i];
+        g.appendChild(nameText);
+        detailY += NAME_FONT_SIZE + LINE_SPACING;
+
+        if (quals[i]) {
+          const qualText = createSVGElement('text', {
+            x: x + NODE_WIDTH / 2,
+            y: detailY,
+            'text-anchor': 'middle',
+            fill: '#70AD47',
+            //'font-style': 'italic',
+            'font-size': QUAL_FONT_SIZE,
+            'pointer-events': 'none',
+            'font-family': 'Calibri, sans-serif'
+          });
+          qualText.textContent = quals[i];
+          g.appendChild(qualText);
+          detailY += QUAL_FONT_SIZE + LINE_SPACING;
+        }
+      }
+    }
+
+    svg.appendChild(g);
+    layout.svgGroup = g;
+    layout.isTeam = isTeam;
+  }
+
+  function drawConnectors(layout, svg) {
+    if (layout.childrenLayouts.length === 0) return;
+
+    const parentCenterX = layout.x + NODE_WIDTH / 2;
+    const parentBottomY = layout.y + layout.nodeHeight;
+
+    const firstChild = layout.childrenLayouts[0];
+    const lastChild = layout.childrenLayouts[layout.childrenLayouts.length - 1];
+
+    const childrenTopY = firstChild.y;
+
+    const horizontalY = parentBottomY + (childrenTopY - parentBottomY) / 2;
+
+    svg.appendChild(createSVGElement('line', {
+      x1: parentCenterX,
+      y1: parentBottomY,
+      x2: parentCenterX,
+      y2: horizontalY,
+      stroke: 'black',
+      'stroke-width': 2
+    }));
+
+    const firstChildCenterX = firstChild.x + NODE_WIDTH / 2;
+    const lastChildCenterX = lastChild.x + NODE_WIDTH / 2;
+
+    svg.appendChild(createSVGElement('line', {
+      x1: firstChildCenterX,
+      y1: horizontalY,
+      x2: lastChildCenterX,
+      y2: horizontalY,
+      stroke: 'black',
+      'stroke-width': 2
+    }));
+
+    layout.childrenLayouts.forEach(child => {
+      const childCenterX = child.x + NODE_WIDTH / 2;
+      svg.appendChild(createSVGElement('line', {
+        x1: childCenterX,
+        y1: horizontalY,
+        x2: childCenterX,
+        y2: child.y,
+        stroke: 'black',
+        'stroke-width': 2
+      }));
+      drawConnectors(child, svg);
+    });
+  }
+
+  function getTreeBounds(layout) {
+    let minX = layout.x;
+    let maxX = layout.x + NODE_WIDTH;
+    let minY = layout.y;
+    let maxY = layout.y + layout.nodeHeight;
+
+    layout.childrenLayouts.forEach(child => {
+      const childBounds = getTreeBounds(child);
+      minX = Math.min(minX, childBounds.minX);
+      maxX = Math.max(maxX, childBounds.maxX);
+      minY = Math.min(minY, childBounds.minY);
+      maxY = Math.max(maxY, childBounds.maxY);
+    });
+
+    return { minX, maxX, minY, maxY };
+  }
+
+  function applyOffset(layout, offsetX, offsetY) {
+    layout.x += offsetX;
+    layout.y += offsetY;
+
+    if (layout.svgGroup) {
+      layout.svgGroup.setAttribute('transform', `translate(${layout.x},${layout.y})`);
+    }
+
+    layout.childrenLayouts.forEach(child => applyOffset(child, offsetX, offsetY));
+  }
+
+  function drawAllNodes(layout, svg) {
+    drawNode(svg, layout);
+    layout.childrenLayouts.forEach(child => drawAllNodes(child, svg));
+  }
+
+  function clearSVG(svg) {
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+  }
+
+  function generateChart() {
+    const inputData = document.getElementById('inputData').value;
+    try {
+      const flatNodes = parseCSV(inputData);
+      const groupedNodes = groupRowsById(flatNodes); // <-- group rows by id here
+      const data = buildTree(groupedNodes);
+
+      const svgContainer = document.getElementById('svgContainer');
+      const svg = document.getElementById('orgChartSVG');
+      clearSVG(svg);
+
+      const layout = layoutTree(data);
+      positionTree(layout, 0, 0);
+
+      const bounds = getTreeBounds(layout);
+      const paddingX = (bounds.maxX - bounds.minX) * PADDING_RATIO;
+      const paddingY = (bounds.maxY - bounds.minY) * PADDING_RATIO;
+
+      applyOffset(layout, paddingX - bounds.minX, paddingY - bounds.minY);
+
+      const width = (bounds.maxX - bounds.minX) + paddingX * 2;
+      const height = (bounds.maxY - bounds.minY) + paddingY * 2;
+
+      svg.setAttribute('width', width);
+      svg.setAttribute('height', height);
+      svg.style.width = width + 'px';
+      svg.style.height = height + 'px';
+
+      drawAllNodes(layout, svg);
+      drawConnectors(layout, svg);
+
+      svgContainer.style.transform = `scale(1)`;
+      svgContainer.style.width = width + 'px';
+      svgContainer.style.height = height + 'px';
+
+      window.currentChart = { svg, width, height };
+
+    } catch (e) {
+      alert('Error parsing CSV or building chart:\n' + e.message);
+      console.error(e);
+    }
+  }
+
+  function downloadAsSVG() {
+    if (!window.currentChart) {
+      alert('Please generate chart first');
+      return;
+    }
+
+    const { svg } = window.currentChart;
+
+    const serializer = new XMLSerializer();
+    let svgString = serializer.serializeToString(svg);
+
+    svgString = `<?xml version="1.0" encoding="UTF-8"?>\n${svgString}`;
+
+    const blob = new Blob([svgString], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'org-chart.svg';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadAsPNG() {
+    if (!window.currentChart) {
+      alert('Please generate chart first');
+      return;
+    }
+
+    const { svg, width, height } = window.currentChart;
+    const serializer = new XMLSerializer();
+    const svgString = serializer.serializeToString(svg);
+
+    const svgBlob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(svgBlob);
+
+    const img = new Image();
+    img.onload = function() {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+
+      ctx.fillStyle = "white";
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+
+      canvas.toBlob(function(blob) {
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = 'org-chart.png';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(blobUrl);
+      });
+    };
+
+    img.onerror = function() {
+      alert('Failed to load SVG for PNG export.');
+      URL.revokeObjectURL(url);
+    };
+
+    img.src = url;
+  }
+
+  window.onload = generateChart;
+  function importCSV() {
+  const fileInput = document.getElementById('fileInput');
+  fileInput.value = ''; // reset file input
+  fileInput.click();
+
+  fileInput.onchange = () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = e => {
+      document.getElementById('inputData').value = e.target.result;
+      generateChart();  // optionally auto-generate chart after import
+    };
+    reader.readAsText(file);
+  };
+}
+
+function exportCSV() {
+  const csvContent = document.getElementById('inputData').value;
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'org-chart-export.csv';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  URL.revokeObjectURL(url);
+}
+</script>
+</body>
+</html>
