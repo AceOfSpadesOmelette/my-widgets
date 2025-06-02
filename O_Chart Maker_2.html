@@ -56,10 +56,8 @@
     <h3>Input your organization chart data (CSV format):</h3>
     <textarea id="inputData" spellcheck="false">
 id,parent_id,position,name,qualifications,color,team
-1,,CEO,Alice Brown,MBA,#385723,false
-1,,CEO,Bob Smith,PhD Management,#385723,false
-2,1,VP Engineering,Carol White,BSc Engineering,#70AD47,false
-2,1,VP Engineering,David Green,PhD AI,#2196F3,false
+1,,CEO,Alice Brown|Bob Smith,MBA|PhD Management,#385723,false
+2,1,VP Engineering,Carol White|David Green,BSc Engineering|PhD AI,#70AD47,false
 3,2,Engineering Manager 1,Emily Davis,BSc SE,#03A9F4,false
 4,3,Senior Engineer Team,,,#0097A7,true
 5,3,Senior Engineer,Michael Brown,PhD AI,#00BCD4,false
@@ -94,6 +92,33 @@ id,parent_id,position,name,qualifications,color,team
   const QUAL_FONT_SIZE = 11;
   const LINE_SPACING = 4;
 
+  // Measure text width using canvas (for wrapping)
+  function getTextWidth(text, font = 'bold 14px Calibri, sans-serif') {
+    const canvas = getTextWidth.canvas || (getTextWidth.canvas = document.createElement("canvas"));
+    const context = canvas.getContext("2d");
+    context.font = font;
+    return context.measureText(text).width;
+  }
+
+  // Wrap text to lines fitting maxWidth
+  function wrapText(text, maxWidth, font = 'bold 14px Calibri, sans-serif') {
+    const words = text.split(/\s+/);
+    const lines = [];
+    let currentLine = '';
+
+    words.forEach(word => {
+      const testLine = currentLine ? currentLine + ' ' + word : word;
+      if (getTextWidth(testLine, font) > maxWidth && currentLine) {
+        lines.push(currentLine);
+        currentLine = word;
+      } else {
+        currentLine = testLine;
+      }
+    });
+    if (currentLine) lines.push(currentLine);
+    return lines;
+  }
+
   function parseCSV(text) {
     const lines = text.trim().split(/\r?\n/);
     if (lines.length < 2) throw new Error("CSV must have header and at least one row");
@@ -101,7 +126,7 @@ id,parent_id,position,name,qualifications,color,team
     const data = [];
     for(let i=1; i<lines.length; i++) {
       if (!lines[i].trim()) continue;
-      // Using a simple CSV parser for demo (doesn't handle commas inside quotes robustly)
+      // Simple CSV parse (no complex quoting)
       const row = lines[i].split(',').map(c => c.trim());
       const obj = {};
       headers.forEach((h, idx) => obj[h] = row[idx] || "");
@@ -110,7 +135,7 @@ id,parent_id,position,name,qualifications,color,team
     return data;
   }
 
-  // New: Group multiple rows by id, aggregate names and qualifications arrays per node
+  // Group rows by id to aggregate multiple personnel into single node
   function groupRowsById(rows) {
     const nodeMap = {};
     rows.forEach(row => {
@@ -156,30 +181,28 @@ id,parent_id,position,name,qualifications,color,team
     return el;
   }
 
-  function calculateNodeHeight(data) {
+  function calculateNodeHeight(data, headerHeight) {
     const isTeam = (data.team || "").toLowerCase() === "true";
-    if (isTeam) return NODE_HEADER_HEIGHT;
+    if (isTeam) return headerHeight;
 
     const names = data.names || [];
     const quals = data.qualifications || [];
 
     const hasDetails = (names.length > 0 || quals.length > 0);
 
-    if (!hasDetails) return NODE_HEADER_HEIGHT;
+    if (!hasDetails) return headerHeight;
 
     let linesCount = 0;
-    let totalTextHeight = 0;
     for (let i = 0; i < names.length; i++) {
       linesCount++; // name line
-      totalTextHeight += NAME_FONT_SIZE;
       if (quals[i]) {
         linesCount++; // qualification line
-        totalTextHeight += QUAL_FONT_SIZE;
       }
     }
+    const totalTextHeight = linesCount * (NAME_FONT_SIZE + LINE_SPACING);
     const totalSpacing = linesCount > 1 ? (linesCount - 1) * LINE_SPACING : 0;
 
-    return NODE_HEADER_HEIGHT + totalTextHeight + totalSpacing + 10; // extra bottom padding
+    return headerHeight + totalTextHeight + totalSpacing + 10; // padding
   }
 
   function layoutTree(data) {
@@ -192,13 +215,22 @@ id,parent_id,position,name,qualifications,color,team
       subtreeWidth = childrenLayouts.reduce((sum, c) => sum + c.subtreeWidth, 0) + HORIZONTAL_GAP * (childrenLayouts.length - 1);
     }
 
-    const nodeHeight = calculateNodeHeight(data);
+    // Wrap position text to get header height
+    const maxTextWidth = NODE_WIDTH - 20;
+    const positionFont = 'bold 14px Calibri, sans-serif';
+    let positionLines = wrapText(data.position, maxTextWidth, positionFont);
+    const lineHeight = 18;
+    const headerHeight = Math.max(NODE_HEADER_HEIGHT, positionLines.length * lineHeight + 10);
+
+    const nodeHeight = calculateNodeHeight(data, headerHeight);
 
     return {
       data,
       childrenLayouts,
       subtreeWidth,
       nodeHeight,
+      headerHeight,
+      positionLines,
       x: 0,
       y: 0
     };
@@ -236,19 +268,8 @@ id,parent_id,position,name,qualifications,color,team
     const hasDetails = !isTeam && (names.length > 0 || quals.length > 0);
 
     const nodeHeight = layout.nodeHeight;
-
-    if (!isTeam) {
-      // Header background rect with color
-      const header = createSVGElement('rect', {
-        x: x,
-        y: y,
-        width: NODE_WIDTH,
-        height: NODE_HEADER_HEIGHT,
-        rx: 6,
-        ry: 6,
-        fill: d.color || '#4CAF50',
-      });
-      g.appendChild(header);
+    const headerHeight = layout.headerHeight;
+    const positionLines = layout.positionLines;
 
     // Outer rect with black border for all nodes
     const rect = createSVGElement('rect', {
@@ -261,42 +282,62 @@ id,parent_id,position,name,qualifications,color,team
       fill: 'white',
       stroke: 'black',
       'stroke-width': 1,
-      //filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))',
-      'fill-opacity': 0,
+      filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))'
     });
     g.appendChild(rect);
+
+    if (!isTeam) {
+      // Header background rect with dynamic height
+      const header = createSVGElement('rect', {
+        x: x,
+        y: y,
+        width: NODE_WIDTH,
+        height: headerHeight,
+        rx: 6,
+        ry: 6,
+        fill: d.color || '#4CAF50',
+      });
+      g.appendChild(header);
 
       // Clip bottom corners of header rect if details exist
       if (hasDetails) {
         const clipRect = createSVGElement('rect', {
           x: x,
-          y: y + NODE_HEADER_HEIGHT,
+          y: y + headerHeight,
           width: NODE_WIDTH,
           height: 6,
-          fill: 'white',
-          'fill-opacity': 0,
+          fill: 'white'
         });
         g.appendChild(clipRect);
       }
     }
 
-    // Position text (black & underline if team, white otherwise)
+    // Position text multiline with tspans, centered horizontally and vertically spaced
     const positionText = createSVGElement('text', {
       x: x + NODE_WIDTH / 2,
-      y: y + 20,
+      y: y + 15,
       'text-anchor': 'middle',
-      'font-weight': '600',
-      'font-size': '14px',
+      'font-weight': 'bold',
+      'font-size': 14,
       'pointer-events': 'none',
       'font-family': 'Calibri, sans-serif',
-      'text-decoration': isTeam ? 'underline' : 'none',
-      fill: isTeam ? 'black' : 'white'
+      'fill': isTeam ? 'black' : 'white',
+      'text-decoration': isTeam ? 'underline' : 'none'
     });
-    positionText.textContent = d.position;
+
+    const lineHeight = 18;
+    positionLines.forEach((line, idx) => {
+      const tspan = createSVGElement('tspan', {
+        x: x + NODE_WIDTH / 2,
+        dy: idx === 0 ? '0' : lineHeight + 'px'
+      });
+      tspan.textContent = line;
+      positionText.appendChild(tspan);
+    });
     g.appendChild(positionText);
 
     if (hasDetails) {
-      let detailY = y + NODE_HEADER_HEIGHT + 15;
+      let detailY = y + headerHeight + 15;
 
       for (let i = 0; i < names.length; i++) {
         const nameText = createSVGElement('text', {
@@ -318,8 +359,8 @@ id,parent_id,position,name,qualifications,color,team
             x: x + NODE_WIDTH / 2,
             y: detailY,
             'text-anchor': 'middle',
-            fill: '#70AD47',
-            //'font-style': 'italic',
+            fill: d.color || '#4CAF50',
+            'font-style': 'italic',
             'font-size': QUAL_FONT_SIZE,
             'pointer-events': 'none',
             'font-family': 'Calibri, sans-serif'
@@ -333,6 +374,7 @@ id,parent_id,position,name,qualifications,color,team
 
     svg.appendChild(g);
     layout.svgGroup = g;
+    layout.nodeHeight = nodeHeight;
     layout.isTeam = isTeam;
   }
 
@@ -425,7 +467,7 @@ id,parent_id,position,name,qualifications,color,team
     const inputData = document.getElementById('inputData').value;
     try {
       const flatNodes = parseCSV(inputData);
-      const groupedNodes = groupRowsById(flatNodes); // <-- group rows by id here
+      const groupedNodes = groupRowsById(flatNodes);
       const data = buildTree(groupedNodes);
 
       const svgContainer = document.getElementById('svgContainer');
@@ -537,37 +579,37 @@ id,parent_id,position,name,qualifications,color,team
 
   window.onload = generateChart;
   function importCSV() {
-  const fileInput = document.getElementById('fileInput');
-  fileInput.value = ''; // reset file input
-  fileInput.click();
+    const fileInput = document.getElementById('fileInput');
+    fileInput.value = ''; // reset file input
+    fileInput.click();
 
-  fileInput.onchange = () => {
-    const file = fileInput.files[0];
-    if (!file) return;
+    fileInput.onchange = () => {
+      const file = fileInput.files[0];
+      if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = e => {
-      document.getElementById('inputData').value = e.target.result;
-      generateChart();  // optionally auto-generate chart after import
+      const reader = new FileReader();
+      reader.onload = e => {
+        document.getElementById('inputData').value = e.target.result;
+        generateChart();  // optionally auto-generate chart after import
+      };
+      reader.readAsText(file);
     };
-    reader.readAsText(file);
-  };
-}
+  }
 
-function exportCSV() {
-  const csvContent = document.getElementById('inputData').value;
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
+  function exportCSV() {
+    const csvContent = document.getElementById('inputData').value;
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
 
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = 'org-chart-export.csv';
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'org-chart-export.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
 
-  URL.revokeObjectURL(url);
-}
+    URL.revokeObjectURL(url);
+  }
 </script>
 </body>
 </html>
