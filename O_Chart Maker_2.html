@@ -274,23 +274,22 @@ id,parent_id,position,name,qualifications,color,team
       const headerHeight = layout.headerHeight;
       const positionLines = layout.positionLines;
 
-      // Outer rect with black border for all nodes
-      const rect = createSVGElement('rect', {
-        x: x,
-        y: y,
-        width: NODE_WIDTH,
-        height: nodeHeight,
-        rx: 6,
-        ry: 6,
-        fill: 'white',
-        stroke: 'black',
-        'stroke-width': 1,
-        'fill-opacity': 0,
-        filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))'
-      });
-      g.appendChild(rect);
-
       if (!isTeam) {
+        // Outer rect with black border for all nodes
+        const rect = createSVGElement('rect', {
+          x: x,
+          y: y,
+          width: NODE_WIDTH,
+          height: nodeHeight,
+          rx: 6,
+          ry: 6,
+          fill: 'white',
+          stroke: 'black',
+          'stroke-width': 1,
+          filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))'
+        });
+        g.appendChild(rect);
+
         // Header background rect with dynamic height
         const header = createSVGElement('rect', {
           x: x,
@@ -303,6 +302,8 @@ id,parent_id,position,name,qualifications,color,team
         });
         g.appendChild(header);
 
+
+
         // Clip bottom corners of header rect if details exist
         if (hasDetails) {
           const clipRect = createSVGElement('rect', {
@@ -312,7 +313,7 @@ id,parent_id,position,name,qualifications,color,team
             height: 6,
             fill: 'white'
           });
-          // g.appendChild(clipRect);
+          //g.appendChild(clipRect);
         }
       }
 
@@ -332,7 +333,6 @@ id,parent_id,position,name,qualifications,color,team
       const lineHeight = 18;
       const textBlockHeight = positionLines.length * lineHeight;
       const headerCenterY = y + headerHeight / 2;
-      // Approximate ascent for Calibri bold 14px is 14px, adjust as needed
       const startY = headerCenterY - textBlockHeight / 2 + 14;
       positionText.setAttribute('y', startY);
 
@@ -347,39 +347,52 @@ id,parent_id,position,name,qualifications,color,team
       g.appendChild(positionText);
 
       if (hasDetails) {
-        // Calculate total height of all detail texts + spacing
-        let linesCount = 0;
-        for (let i = 0; i < names.length; i++) {
-          linesCount++; // name line
-          if (quals[i]) linesCount++; // qualification line
-        }
-        // total spacing between lines: between each line and extra between persons
-        const totalTextHeight = linesCount * (NAME_FONT_SIZE + LINE_SPACING) + (linesCount - 1) * LINE_SPACING;
+        const maxTextWidth = NODE_WIDTH - 20; // padding for wrap
+
+        // Wrap each name and qualification and calculate total detail height
+        const wrappedDetails = names.map((name, i) => {
+          const wrappedNameLines = wrapText(name, maxTextWidth, `${NAME_FONT_SIZE}px Calibri, sans-serif`);
+          const qualText = quals[i] || "";
+          const wrappedQualLines = qualText ? wrapText(qualText, maxTextWidth, `italic ${QUAL_FONT_SIZE}px Calibri, sans-serif`) : [];
+          return { nameLines: wrappedNameLines, qualLines: wrappedQualLines };
+        });
+
+        // Calculate total height needed for detail block
+        let totalDetailHeight = 0;
+        const nameLineHeight = NAME_FONT_SIZE + LINE_SPACING;
+        const qualLineHeight = QUAL_FONT_SIZE + LINE_SPACING;
+
+        wrappedDetails.forEach(({ nameLines, qualLines }) => {
+          totalDetailHeight += nameLines.length * nameLineHeight;
+          totalDetailHeight += qualLines.length * qualLineHeight;
+        });
 
         const detailsTop = y + headerHeight;
         const detailsHeight = nodeHeight - headerHeight;
+        // Vertical start position to center details block inside detail area
+        let detailY = detailsTop + (detailsHeight - totalDetailHeight) / 2 + NAME_FONT_SIZE;
 
-        // Vertical start position to center detail block inside detail area
-        const detailStartY = detailsTop + (detailsHeight - totalTextHeight) / 2 + NAME_FONT_SIZE;
-
-        let detailY = detailStartY;
-
-        for (let i = 0; i < names.length; i++) {
-          const nameText = createSVGElement('text', {
-            x: x + NODE_WIDTH / 2,
-            y: detailY,
-            'text-anchor': 'middle',
-            fill: 'black',
-            'font-weight': 'bold',
-            'font-size': NAME_FONT_SIZE,
-            'pointer-events': 'none',
-            'font-family': 'Calibri, sans-serif'
+        // Render wrapped names and qualifications
+        wrappedDetails.forEach(({ nameLines, qualLines }) => {
+          // Names (bold)
+          nameLines.forEach(nameLine => {
+            const nameText = createSVGElement('text', {
+              x: x + NODE_WIDTH / 2,
+              y: detailY,
+              'text-anchor': 'middle',
+              fill: 'black',
+              'font-weight': 'bold',
+              'font-size': NAME_FONT_SIZE,
+              'pointer-events': 'none',
+              'font-family': 'Calibri, sans-serif'
+            });
+            nameText.textContent = nameLine;
+            g.appendChild(nameText);
+            detailY += nameLineHeight;
           });
-          nameText.textContent = names[i];
-          g.appendChild(nameText);
-          detailY += NAME_FONT_SIZE + LINE_SPACING;
 
-          if (quals[i]) {
+          // Qualifications (italic, colored)
+          qualLines.forEach(qualLine => {
             const qualText = createSVGElement('text', {
               x: x + NODE_WIDTH / 2,
               y: detailY,
@@ -390,11 +403,11 @@ id,parent_id,position,name,qualifications,color,team
               'pointer-events': 'none',
               'font-family': 'Calibri, sans-serif'
             });
-            qualText.textContent = quals[i];
+            qualText.textContent = qualLine;
             g.appendChild(qualText);
-            detailY += QUAL_FONT_SIZE + LINE_SPACING;
-          }
-        }
+            detailY += qualLineHeight;
+          });
+        });
       }
 
       svg.appendChild(g);
