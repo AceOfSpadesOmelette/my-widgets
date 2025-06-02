@@ -274,6 +274,22 @@ id,parent_id,position,name,qualifications,color,team
       const headerHeight = layout.headerHeight;
       const positionLines = layout.positionLines;
 
+      // Outer rect with black border for all nodes
+      const rect = createSVGElement('rect', {
+        x: x,
+        y: y,
+        width: NODE_WIDTH,
+        height: nodeHeight,
+        rx: 6,
+        ry: 6,
+        fill: 'white',
+        stroke: 'black',
+        'stroke-width': 1,
+        'fill-opacity': 0,
+        filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))'
+      });
+      g.appendChild(rect);
+
       if (!isTeam) {
         // Header background rect with dynamic height
         const header = createSVGElement('rect', {
@@ -294,35 +310,16 @@ id,parent_id,position,name,qualifications,color,team
             y: y + headerHeight,
             width: NODE_WIDTH,
             height: 6,
-            fill: 'white',
+            fill: 'white'
           });
-          g.appendChild(clipRect);
+          // g.appendChild(clipRect);
         }
       }
 
-      // Outer rect with black border for all nodes
-      const rect = createSVGElement('rect', {
-        x: x,
-        y: y,
-        width: NODE_WIDTH,
-        height: nodeHeight,
-        rx: 6,
-        ry: 6,
-        fill: 'white',
-        stroke: 'black',
-        'stroke-width': 1,        
-        'fill-opacity': 0,
-        filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))'
-      });
-      g.appendChild(rect);
-
-      
-
-      // Position text multiline with tspans, centered horizontally and vertically spaced
       // Position text multiline with tspans, horizontally centered and vertically centered in header
       const positionText = createSVGElement('text', {
         x: x + NODE_WIDTH / 2,
-        y: y,  // Will adjust below for vertical centering
+        y: y,  // Will be adjusted below
         'text-anchor': 'middle',
         'font-weight': 'bold',
         'font-size': 14,
@@ -335,8 +332,8 @@ id,parent_id,position,name,qualifications,color,team
       const lineHeight = 18;
       const textBlockHeight = positionLines.length * lineHeight;
       const headerCenterY = y + headerHeight / 2;
-      const startY = headerCenterY - textBlockHeight / 2 + 14;  // 14 approx font ascent
-
+      // Approximate ascent for Calibri bold 14px is 14px, adjust as needed
+      const startY = headerCenterY - textBlockHeight / 2 + 14;
       positionText.setAttribute('y', startY);
 
       positionLines.forEach((line, idx) => {
@@ -350,7 +347,22 @@ id,parent_id,position,name,qualifications,color,team
       g.appendChild(positionText);
 
       if (hasDetails) {
-        let detailY = y + headerHeight + 15;
+        // Calculate total height of all detail texts + spacing
+        let linesCount = 0;
+        for (let i = 0; i < names.length; i++) {
+          linesCount++; // name line
+          if (quals[i]) linesCount++; // qualification line
+        }
+        // total spacing between lines: between each line and extra between persons
+        const totalTextHeight = linesCount * (NAME_FONT_SIZE + LINE_SPACING) + (linesCount - 1) * LINE_SPACING;
+
+        const detailsTop = y + headerHeight;
+        const detailsHeight = nodeHeight - headerHeight;
+
+        // Vertical start position to center detail block inside detail area
+        const detailStartY = detailsTop + (detailsHeight - totalTextHeight) / 2 + NAME_FONT_SIZE;
+
+        let detailY = detailStartY;
 
         for (let i = 0; i < names.length; i++) {
           const nameText = createSVGElement('text', {
