@@ -21,7 +21,7 @@
       font-family: monospace;
       padding: 10px;
       resize: vertical;
-      font-size: 14px;
+      font-size: 16px;
     }
 
     button {
@@ -32,7 +32,7 @@
       border-radius: 4px;
       cursor: pointer;
       margin-right: 10px;
-      font-size: 14px;
+      font-size: 16px;
     }
 
     #viewport {
@@ -59,11 +59,16 @@
     <h3>Input your organization chart data (CSV format):</h3>
     <textarea id="inputData" spellcheck="false">
 id,parent_id,position,name,qualifications,color,team
-1,,CEO,Alice Brown|Bob Smith,MBA|PhD Management,#385723,false
-2,1,VP Engineering,Carol White|David Green,BSc Engineering|PhD AI,#70AD47,false
+1,,CEO,Alice Brown,MBA/PhD Management,#385723,false
+1,,CEO,Bob Smith,MBA|PhD Management,#385723,false
+1,,CEO,Bob Smith,MBA|PhD Management,#385723,false
+1,,CEO,Bob Smith,MBA|PhD Management,#385723,false
+1,,CEO,Bob Smith,MBA|PhD Management,#385723,false
+2,1,VP Engineering,Carol White,BSc Engineering|PhD AI,#70AD47,false
+2,1,VP Engineering,David Green,BSc Engineering|PhD AI,#70AD47,false
 3,2,Engineering Manager 1,Emily Davis,BSc SE,#03A9F4,false
 4,3,Senior Engineer Team,,,#0097A7,true
-5,3,Senior Engineer,Michael Brown,PhD AI,#00BCD4,false
+5,3,Senior Engineer,Michael Brown,MSc, BEng (Hons),#00BCD4,false
 6,5,Engineer Team,,,#0097A7,true
 7,5,Engineer,Chris Wilson,,#00BCD4,false
 8,2,Engineering Manager 2,Sarah Johnson,BEng EE,#03A9F4,false
@@ -91,55 +96,66 @@ id,parent_id,position,name,qualifications,color,team
     const PADDING_RATIO = 0.05;
     const svgNS = "http://www.w3.org/2000/svg";
 
-    const NAME_FONT_SIZE = 13;
-    const QUAL_FONT_SIZE = 11;
-    const LINE_SPACING = 4;
+    const NAME_FONT_SIZE = 16;
+    const QUAL_FONT_SIZE = 12;
+    const LINE_SPACING = 3;
 
-    // Measure text width using canvas (for wrapping)
-    function getTextWidth(text, font = 'bold 14px Calibri, sans-serif') {
-      const canvas = getTextWidth.canvas || (getTextWidth.canvas = document.createElement("canvas"));
-      const context = canvas.getContext("2d");
-      context.font = font;
-      return context.measureText(text).width;
-    }
-
-    // Wrap text to lines fitting maxWidth
-    function wrapText(text, maxWidth, font = 'bold 14px Calibri, sans-serif') {
-      const words = text.split(/\s+/);
-      const lines = [];
-      let currentLine = '';
-
-      words.forEach(word => {
-        const testLine = currentLine ? currentLine + ' ' + word : word;
-        if (getTextWidth(testLine, font) > maxWidth && currentLine) {
-          lines.push(currentLine);
-          currentLine = word;
-        } else {
-          currentLine = testLine;
-        }
-      });
-      if (currentLine) lines.push(currentLine);
-      return lines;
-    }
-
+    // CSV parser that handles quoted fields properly
+    // Returns array of objects with keys from header
     function parseCSV(text) {
+      const rows = [];
       const lines = text.trim().split(/\r?\n/);
       if (lines.length < 2) throw new Error("CSV must have header and at least one row");
-      const headers = lines[0].split(',').map(h => h.trim());
-      const data = [];
+
+      const headers = [];
+      // Parse header line (simple, no quotes expected)
+      lines[0].split(',').forEach(h => headers.push(h.trim()));
+
       for (let i = 1; i < lines.length; i++) {
-        if (!lines[i].trim()) continue;
-        // Simple CSV parse (no complex quoting)
-        const row = lines[i].split(',').map(c => c.trim());
+        const line = lines[i].trim();
+        if (!line) continue;
+
+        const row = [];
+        let cur = '';
+        let inQuotes = false;
+        for (let c = 0; c < line.length; c++) {
+          const ch = line[c];
+          if (ch === '"' && (c === 0 || line[c - 1] !== '\\')) {
+            inQuotes = !inQuotes;
+          } else if (ch === ',' && !inQuotes) {
+            row.push(cur);
+            cur = '';
+          } else {
+            cur += ch;
+          }
+        }
+        row.push(cur);
+
+        // Map to object with header keys, trim spaces and remove surrounding quotes if any
         const obj = {};
-        headers.forEach((h, idx) => obj[h] = row[idx] || "");
-        data.push(obj);
+        headers.forEach((h, idx) => {
+          let val = row[idx] || '';
+          val = val.trim();
+          if (val.startsWith('"') && val.endsWith('"')) {
+            val = val.substring(1, val.length - 1);
+          }
+          obj[h] = val;
+        });
+        rows.push(obj);
       }
-      return data;
+      return rows;
     }
 
     // Group rows by id to aggregate multiple personnel into single node
+    // Also split qualifications by commas inside each qualification field
     function groupRowsById(rows) {
+      // Validate each row has only one name (no pipe)
+      rows.forEach(row => {
+        if (row.name && row.name.includes('|')) {
+          throw new Error(`Multiple names detected in a single row (id=${row.id}). Only one person per row allowed.`);
+        }
+      });
+
       const nodeMap = {};
       rows.forEach(row => {
         if (!nodeMap[row.id]) {
@@ -153,8 +169,18 @@ id,parent_id,position,name,qualifications,color,team
             qualifications: []
           };
         }
-        if (row.name) nodeMap[row.id].names.push(row.name);
-        if (row.qualifications) nodeMap[row.id].qualifications.push(row.qualifications);
+        if (row.name) {
+          const nameTrimmed = row.name.trim();
+          if (nameTrimmed) nodeMap[row.id].names.push(nameTrimmed);
+        }
+
+        if (row.qualifications) {
+          // Split qualifications by both pipe and comma
+          row.qualifications.split(/[\|,]/).forEach(qpart => {
+            const qualTrimmed = qpart.trim();
+            if (qualTrimmed) nodeMap[row.id].qualifications.push(qualTrimmed);
+          });
+        }
       });
       return Object.values(nodeMap);
     }
@@ -184,28 +210,71 @@ id,parent_id,position,name,qualifications,color,team
       return el;
     }
 
-    function calculateNodeHeight(data, headerHeight) {
+    // Measure text width using canvas (for wrapping)
+    function getTextWidth(text, font = 'bold 14px Calibri, sans-serif') {
+      const canvas = getTextWidth.canvas || (getTextWidth.canvas = document.createElement("canvas"));
+      const context = canvas.getContext("2d");
+      context.font = font;
+      return context.measureText(text).width;
+    }
+
+    // Wrap text to lines fitting maxWidth
+    function wrapText(text, maxWidth, font = 'bold 14px Calibri, sans-serif') {
+      const words = text.split(/\s+/);
+      const lines = [];
+      let currentLine = '';
+
+      words.forEach(word => {
+        const testLine = currentLine ? currentLine + ' ' + word : word;
+        if (getTextWidth(testLine, font) > maxWidth && currentLine) {
+          lines.push(currentLine);
+          currentLine = word;
+        } else {
+          currentLine = testLine;
+        }
+      });
+      if (currentLine) lines.push(currentLine);
+      return lines;
+    }
+
+    // Calculate node height based on header and wrapped detail text count
+    function calculateNodeHeight(data, headerHeight, maxTextWidth) {
       const isTeam = (data.team || "").toLowerCase() === "true";
       if (isTeam) return headerHeight;
 
       const names = data.names || [];
       const quals = data.qualifications || [];
 
-      const hasDetails = (names.length > 0 || quals.length > 0);
+      if (names.length === 0) return headerHeight;
 
-      if (!hasDetails) return headerHeight;
+      const nameFont = `${NAME_FONT_SIZE}px Calibri, sans-serif`;
+      const qualFont = `italic ${QUAL_FONT_SIZE}px Calibri, sans-serif`;
 
-      let linesCount = 0;
+      const nameLineHeight = NAME_FONT_SIZE + LINE_SPACING;
+      const qualLineHeight = QUAL_FONT_SIZE + LINE_SPACING;
+
+      const gapBetweenPersons = 6; // Same gap as in drawNode
+
+      let totalHeight = 0;
+
       for (let i = 0; i < names.length; i++) {
-        linesCount++; // name line
+        const nameLines = wrapText(names[i], maxTextWidth, nameFont);
+        totalHeight += nameLines.length * nameLineHeight;
+
         if (quals[i]) {
-          linesCount++; // qualification line
+          const qualLines = wrapText(quals[i], maxTextWidth, qualFont);
+          totalHeight += qualLines.length * qualLineHeight;
+        }
+
+        // Add gap between persons except after last
+        if (i < names.length - 1) {
+          totalHeight += gapBetweenPersons;
         }
       }
-      const totalTextHeight = linesCount * (NAME_FONT_SIZE + LINE_SPACING);
-      const totalSpacing = linesCount > 1 ? (linesCount - 1) * LINE_SPACING : 0;
 
-      return headerHeight + totalTextHeight + totalSpacing + 10; // padding
+      const paddingInsideNode = 12; // top + bottom padding
+
+      return headerHeight + totalHeight + paddingInsideNode * 2;
     }
 
     function layoutTree(data) {
@@ -225,7 +294,7 @@ id,parent_id,position,name,qualifications,color,team
       const lineHeight = 18;
       const headerHeight = Math.max(NODE_HEADER_HEIGHT, positionLines.length * lineHeight + 10);
 
-      const nodeHeight = calculateNodeHeight(data, headerHeight);
+      const nodeHeight = calculateNodeHeight(data, headerHeight, maxTextWidth);
 
       return {
         data,
@@ -238,7 +307,6 @@ id,parent_id,position,name,qualifications,color,team
         y: 0
       };
     }
-
     function positionTree(layout, startX, startY) {
       layout.y = startY;
       if (layout.childrenLayouts.length === 0) {
@@ -246,7 +314,7 @@ id,parent_id,position,name,qualifications,color,team
       } else {
         let childX = startX;
         layout.childrenLayouts.forEach(child => {
-          positionTree(child, childX, startY + child.nodeHeight + VERTICAL_GAP);
+          positionTree(child, childX, startY + layout.nodeHeight + VERTICAL_GAP);
           childX += child.subtreeWidth + HORIZONTAL_GAP;
         });
 
@@ -256,7 +324,6 @@ id,parent_id,position,name,qualifications,color,team
         layout.x = centerX;
       }
     }
-
     function drawNode(svg, layout) {
       const g = createSVGElement('g', { cursor: 'default' });
       const x = layout.x;
@@ -274,22 +341,23 @@ id,parent_id,position,name,qualifications,color,team
       const headerHeight = layout.headerHeight;
       const positionLines = layout.positionLines;
 
-      if (!isTeam) {
-        // Outer rect with black border for all nodes
-        const rect = createSVGElement('rect', {
-          x: x,
-          y: y,
-          width: NODE_WIDTH,
-          height: nodeHeight,
-          rx: 6,
-          ry: 6,
-          fill: 'white',
-          stroke: 'black',
-          'stroke-width': 1,
-          filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))'
-        });
-        g.appendChild(rect);
+      // Outer rect with black border for all nodes
+      const rect = createSVGElement('rect', {
+        x: x,
+        y: y,
+        width: NODE_WIDTH,
+        height: nodeHeight,
+        rx: 6,
+        ry: 6,
+        fill: 'white',
+        stroke: 'black',
+        'stroke-width': 1,
+        'fill-opacity': 0,
+        filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))'
+      });
+      g.appendChild(rect);
 
+      if (!isTeam) {
         // Header background rect with dynamic height
         const header = createSVGElement('rect', {
           x: x,
@@ -302,8 +370,6 @@ id,parent_id,position,name,qualifications,color,team
         });
         g.appendChild(header);
 
-
-
         // Clip bottom corners of header rect if details exist
         if (hasDetails) {
           const clipRect = createSVGElement('rect', {
@@ -313,7 +379,7 @@ id,parent_id,position,name,qualifications,color,team
             height: 6,
             fill: 'white'
           });
-          //g.appendChild(clipRect);
+          // g.appendChild(clipRect);
         }
       }
 
@@ -323,14 +389,14 @@ id,parent_id,position,name,qualifications,color,team
         y: y,  // Will be adjusted below
         'text-anchor': 'middle',
         'font-weight': 'bold',
-        'font-size': 14,
+        'font-size': 16,
         'pointer-events': 'none',
         'font-family': 'Calibri, sans-serif',
         'fill': isTeam ? 'black' : 'white',
         'text-decoration': isTeam ? 'underline' : 'none'
       });
 
-      const lineHeight = 18;
+      const lineHeight = 16;
       const textBlockHeight = positionLines.length * lineHeight;
       const headerCenterY = y + headerHeight / 2;
       const startY = headerCenterY - textBlockHeight / 2 + 14;
@@ -349,32 +415,21 @@ id,parent_id,position,name,qualifications,color,team
       if (hasDetails) {
         const maxTextWidth = NODE_WIDTH - 20; // padding for wrap
 
-        // Wrap each name and qualification and calculate total detail height
-        const wrappedDetails = names.map((name, i) => {
-          const wrappedNameLines = wrapText(name, maxTextWidth, `${NAME_FONT_SIZE}px Calibri, sans-serif`);
-          const qualText = quals[i] || "";
-          const wrappedQualLines = qualText ? wrapText(qualText, maxTextWidth, `italic ${QUAL_FONT_SIZE}px Calibri, sans-serif`) : [];
-          return { nameLines: wrappedNameLines, qualLines: wrappedQualLines };
-        });
+        const nameFont = `${NAME_FONT_SIZE}px Calibri, sans-serif`;
+        const qualFont = `italic ${QUAL_FONT_SIZE}px Calibri, sans-serif`;
 
-        // Calculate total height needed for detail block
-        let totalDetailHeight = 0;
         const nameLineHeight = NAME_FONT_SIZE + LINE_SPACING;
         const qualLineHeight = QUAL_FONT_SIZE + LINE_SPACING;
 
-        wrappedDetails.forEach(({ nameLines, qualLines }) => {
-          totalDetailHeight += nameLines.length * nameLineHeight;
-          totalDetailHeight += qualLines.length * qualLineHeight;
-        });
-
         const detailsTop = y + headerHeight;
         const detailsHeight = nodeHeight - headerHeight;
-        // Vertical start position to center details block inside detail area
-        let detailY = detailsTop + (detailsHeight - totalDetailHeight) / 2 + NAME_FONT_SIZE;
 
-        // Render wrapped names and qualifications
-        wrappedDetails.forEach(({ nameLines, qualLines }) => {
-          // Names (bold)
+        // Start detailY a bit below header, add some padding
+        const paddingInsideNode = 8; // px
+        let detailY = y + headerHeight + paddingInsideNode + NAME_FONT_SIZE;
+
+        for (let i = 0; i < names.length; i++) {
+          const nameLines = wrapText(names[i], maxTextWidth, nameFont);
           nameLines.forEach(nameLine => {
             const nameText = createSVGElement('text', {
               x: x + NODE_WIDTH / 2,
@@ -391,23 +446,32 @@ id,parent_id,position,name,qualifications,color,team
             detailY += nameLineHeight;
           });
 
-          // Qualifications (italic, colored)
-          qualLines.forEach(qualLine => {
-            const qualText = createSVGElement('text', {
-              x: x + NODE_WIDTH / 2,
-              y: detailY,
-              'text-anchor': 'middle',
-              fill: d.color || '#4CAF50',
-              'font-style': 'italic',
-              'font-size': QUAL_FONT_SIZE,
-              'pointer-events': 'none',
-              'font-family': 'Calibri, sans-serif'
+          if (quals[i]) {
+            const qualLines = wrapText(quals[i], maxTextWidth, qualFont);
+            qualLines.forEach(qualLine => {
+              const qualText = createSVGElement('text', {
+                x: x + NODE_WIDTH / 2,
+                y: detailY,
+                'text-anchor': 'middle',
+                fill: d.color || '#4CAF50',
+                'font-style': 'italic',
+                'font-size': QUAL_FONT_SIZE,
+                'pointer-events': 'none',
+                'font-family': 'Calibri, sans-serif'
+              });
+              qualText.textContent = qualLine;
+              g.appendChild(qualText);
+              detailY += qualLineHeight;
             });
-            qualText.textContent = qualLine;
-            g.appendChild(qualText);
-            detailY += qualLineHeight;
-          });
-        });
+          }
+
+          // Add vertical gap between persons except after last one
+          if (i < names.length - 1) {
+            detailY += 6; // 6px gap between person blocks
+          }
+
+
+        }
       }
 
       svg.appendChild(g);
@@ -486,7 +550,32 @@ id,parent_id,position,name,qualifications,color,team
       layout.y += offsetY;
 
       if (layout.svgGroup) {
-        layout.svgGroup.setAttribute('transform', `translate(${layout.x},${layout.y})`);
+        // Instead of transform, update all child elements' x/y attrs by offset
+        const children = layout.svgGroup.children;
+        for (let i = 0; i < children.length; i++) {
+          const el = children[i];
+          if (el.hasAttribute('x')) {
+            const x = parseFloat(el.getAttribute('x'));
+            el.setAttribute('x', x + offsetX);
+          }
+          if (el.hasAttribute('y')) {
+            const y = parseFloat(el.getAttribute('y'));
+            el.setAttribute('y', y + offsetY);
+          }
+          // Also update line elements with x1, y1, x2, y2
+          if (el.tagName === 'line') {
+            ['x1', 'x2'].forEach(attr => {
+              if (el.hasAttribute(attr)) {
+                el.setAttribute(attr, parseFloat(el.getAttribute(attr)) + offsetX);
+              }
+            });
+            ['y1', 'y2'].forEach(attr => {
+              if (el.hasAttribute(attr)) {
+                el.setAttribute(attr, parseFloat(el.getAttribute(attr)) + offsetY);
+              }
+            });
+          }
+        }
       }
 
       layout.childrenLayouts.forEach(child => applyOffset(child, offsetX, offsetY));
