@@ -2,6 +2,8 @@
 <html>
 
 <head>
+  <meta charset="utf-8" />
+  <title>Org Chart</title>
   <style>
     body {
       font-family: Calibri, sans-serif;
@@ -90,8 +92,9 @@ id,parent_id,position,name,qualifications,color,team
 
   <script>
     const NODE_WIDTH = 180;
-    const NODE_HEADER_HEIGHT = 30;
-    const VERTICAL_GAP = 120;
+    // Base vertical constants
+    const NODE_HEADER_HEIGHT_BASE = 30;
+    const VERTICAL_GAP_BASE = 120;
     const HORIZONTAL_GAP = 40;
     const PADDING_RATIO = 0.05;
     const svgNS = "http://www.w3.org/2000/svg";
@@ -237,15 +240,21 @@ id,parent_id,position,name,qualifications,color,team
       return lines;
     }
 
-    // Calculate node height based on header and wrapped detail text count
-    function calculateNodeHeight(data, headerHeight, maxTextWidth) {
+    // We'll calculate each node height in "base" pixels (no global scale).
+    // When positioning connectors vertically between a parent and a single child (i.e. a straight chain of two nodes),
+    // we will halve that connector segment. But the node rectangle sizes remain as calculated.
+    // However the user requested "half the length of the vertical nodes when it's just two of them together".
+    // Interpreting that: when a parent has exactly one child AND that child has no siblings (i.e. not branched),
+    // the vertical gap between the two nodes should be halved. We'll implement that behavior.
+
+    function calculateNodeHeight(data, headerHeightBase, maxTextWidth) {
       const isTeam = (data.team || "").toLowerCase() === "true";
-      if (isTeam) return headerHeight;
+      if (isTeam) return Math.max(headerHeightBase, NODE_HEADER_HEIGHT_BASE);
 
       const names = data.names || [];
       const quals = data.qualifications || [];
 
-      if (names.length === 0) return headerHeight;
+      if (names.length === 0) return headerHeightBase;
 
       const nameFont = `${NAME_FONT_SIZE}px Calibri, sans-serif`;
       const qualFont = `italic ${QUAL_FONT_SIZE}px Calibri, sans-serif`;
@@ -274,7 +283,7 @@ id,parent_id,position,name,qualifications,color,team
 
       const paddingInsideNode = 12; // top + bottom padding
 
-      return headerHeight + totalHeight + paddingInsideNode * 2;
+      return headerHeightBase + totalHeight + paddingInsideNode * 2;
     }
 
     function layoutTree(data) {
@@ -287,34 +296,56 @@ id,parent_id,position,name,qualifications,color,team
         subtreeWidth = childrenLayouts.reduce((sum, c) => sum + c.subtreeWidth, 0) + HORIZONTAL_GAP * (childrenLayouts.length - 1);
       }
 
-      // Wrap position text to get header height
+      // Wrap position text to get header height (base)
       const maxTextWidth = NODE_WIDTH - 20;
       const positionFont = 'bold 14px Calibri, sans-serif';
       let positionLines = wrapText(data.position, maxTextWidth, positionFont);
       const lineHeight = 18;
-      const headerHeight = Math.max(NODE_HEADER_HEIGHT, positionLines.length * lineHeight + 10);
+      const headerHeightBase = Math.max(NODE_HEADER_HEIGHT_BASE, positionLines.length * lineHeight + 10);
 
-      const nodeHeight = calculateNodeHeight(data, headerHeight, maxTextWidth);
+      // Node height in base pixels
+      const nodeHeight = calculateNodeHeight(data, headerHeightBase, maxTextWidth);
 
       return {
         data,
         childrenLayouts,
         subtreeWidth,
         nodeHeight,
-        headerHeight,
+        headerHeightBase,
+        headerHeight: headerHeightBase, // keep base; draw uses base values
         positionLines,
         x: 0,
         y: 0
       };
     }
+
+    // Helper: detect whether the connector between parent and child should be halved.
+    // We'll half the vertical connector when:
+    // - parent has exactly one child AND that child does not have siblings (that's the same condition),
+    // but the user asked "when it's just two of them together" — interpret as edge where parent has exactly one child
+    // AND that child has no children? The user's example shows CEO -> VP (a chain), where both have multiple people inside nodes,
+    // but VP also has further children. They want the vertical segment between parent and child to be half when there's no branching.
+    // Safer interpretation: when a parent has exactly one child (i.e., parent's childrenLayouts.length === 1) AND that parent itself
+    // is not part of a branching parent (we only need to check parent->child relationship). We'll implement: if parent has exactly one child,
+    // AND the parent is not itself a child among multiple siblings (not necessary). The simplest: if parent has exactly one child AND that child
+    // is the only child of that parent (same) AND that parent's children do not branch (i.e., parent.children.length === 1),
+    // we half the vertical gap between them. If there are more than one children we keep gap full.
+    //
+    // Implemented by making a function that returns the vertical gap to use between a given parent layout and its children:
+    // - if parent.childrenLayouts.length === 1 -> use VERTICAL_GAP_BASE / 2
+    // - else -> use VERTICAL_GAP_BASE
+
     function positionTree(layout, startX, startY) {
       layout.y = startY;
       if (layout.childrenLayouts.length === 0) {
         layout.x = startX;
       } else {
         let childX = startX;
+        // Determine vertical gap for this parent: half if exactly one child, full otherwise
+        const verticalGap = layout.childrenLayouts.length === 1 ? VERTICAL_GAP_BASE / 2 : VERTICAL_GAP_BASE;
+
         layout.childrenLayouts.forEach(child => {
-          positionTree(child, childX, startY + layout.nodeHeight + VERTICAL_GAP);
+          positionTree(child, childX, startY + layout.nodeHeight + verticalGap);
           childX += child.subtreeWidth + HORIZONTAL_GAP;
         });
 
@@ -324,6 +355,7 @@ id,parent_id,position,name,qualifications,color,team
         layout.x = centerX;
       }
     }
+
     function drawNode(svg, layout) {
       const g = createSVGElement('g', { cursor: 'default' });
       const x = layout.x;
@@ -358,7 +390,7 @@ id,parent_id,position,name,qualifications,color,team
       g.appendChild(rect);
 
       if (!isTeam) {
-        // Header background rect with dynamic height
+        // Header background rect with dynamic height (base units)
         const header = createSVGElement('rect', {
           x: x,
           y: y,
@@ -369,24 +401,12 @@ id,parent_id,position,name,qualifications,color,team
           fill: d.color || '#4CAF50',
         });
         g.appendChild(header);
-
-        // Clip bottom corners of header rect if details exist
-        if (hasDetails) {
-          const clipRect = createSVGElement('rect', {
-            x: x,
-            y: y + headerHeight,
-            width: NODE_WIDTH,
-            height: 6,
-            fill: 'white'
-          });
-          // g.appendChild(clipRect);
-        }
       }
 
       // Position text multiline with tspans, horizontally centered and vertically centered in header
       const positionText = createSVGElement('text', {
         x: x + NODE_WIDTH / 2,
-        y: y,  // Will be adjusted below
+        y: y, // adjusted below
         'text-anchor': 'middle',
         'font-weight': 'bold',
         'font-size': 16,
@@ -469,8 +489,6 @@ id,parent_id,position,name,qualifications,color,team
           if (i < names.length - 1) {
             detailY += 6; // 6px gap between person blocks
           }
-
-
         }
       }
 
@@ -489,8 +507,13 @@ id,parent_id,position,name,qualifications,color,team
       const firstChild = layout.childrenLayouts[0];
       const lastChild = layout.childrenLayouts[layout.childrenLayouts.length - 1];
 
+      // Decide vertical gap used between this parent and its children (same logic as in positionTree)
+      const verticalGap = layout.childrenLayouts.length === 1 ? VERTICAL_GAP_BASE / 2 : VERTICAL_GAP_BASE;
+
+      // child's top y is firstChild.y (already positioned using the same vertical gap)
       const childrenTopY = firstChild.y;
 
+      // place horizontal line halfway between parent bottom and children top (consistent with earlier behavior)
       const horizontalY = parentBottomY + (childrenTopY - parentBottomY) / 2;
 
       svg.appendChild(createSVGElement('line', {
@@ -550,7 +573,7 @@ id,parent_id,position,name,qualifications,color,team
       layout.y += offsetY;
 
       if (layout.svgGroup) {
-        // Instead of transform, update all child elements' x/y attrs by offset
+        // Update attributes for elements inside the group's children.
         const children = layout.svgGroup.children;
         for (let i = 0; i < children.length; i++) {
           const el = children[i];
@@ -602,6 +625,7 @@ id,parent_id,position,name,qualifications,color,team
         clearSVG(svg);
 
         const layout = layoutTree(data);
+        // Start with (0,0)
         positionTree(layout, 0, 0);
 
         const bounds = getTreeBounds(layout);
@@ -610,8 +634,10 @@ id,parent_id,position,name,qualifications,color,team
 
         applyOffset(layout, paddingX - bounds.minX, paddingY - bounds.minY);
 
-        const width = (bounds.maxX - bounds.minX) + paddingX * 2;
-        const height = (bounds.maxY - bounds.minY) + paddingY * 2;
+        // Recompute bounds after offset to set width/height correctly
+        const finalBounds = getTreeBounds(layout);
+        const width = (finalBounds.maxX - finalBounds.minX) + paddingX * 2;
+        const height = (finalBounds.maxY - finalBounds.minY) + paddingY * 2;
 
         svg.setAttribute('width', width);
         svg.setAttribute('height', height);
@@ -625,7 +651,7 @@ id,parent_id,position,name,qualifications,color,team
         svgContainer.style.width = width + 'px';
         svgContainer.style.height = height + 'px';
 
-        window.currentChart = { svg, width, height };
+        window.currentChart = { svg, width, height, layout };
 
       } catch (e) {
         alert('Error parsing CSV or building chart:\n' + e.message);
